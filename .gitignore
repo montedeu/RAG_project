@@ -2,3 +2,5 @@
 .env
 data/
 artifacts/
+scripts/
+__pycache__/
