@@ -23,6 +23,22 @@ class Document:
     text: str
 
 
+@dataclass
+class Chunk:
+    """A chunk of a document, for retrieval and reranking.
+
+    Attributes:
+        chunk_id: Corpus-wide unique identifier, `'{doc_id}#{position}'`.
+        doc_id: Identifier of the document this chunk came from.
+        position: 0-based index of this chunk within its document.
+        text: The chunk's text, which is what gets indexed.
+    """
+    chunk_id: str
+    doc_id: str
+    position: int
+    text: str
+
+
 def load_jsonl(path: Path) -> list[dict]:
     """Read a JSON Lines file into a list of raw dicts, one per line.
 
@@ -215,21 +231,24 @@ def get_corpus_stats(corpus: dict[str, Document], tokenizer=None,
     return stats
 
 
-def chunk(text: str, size: int = 4096, overlap: int = 50) -> list[str]:
-    """Split text into fixed-size overlapping windows, measured in characters.
+def chunk(text: str, tokenizer, size: int = 450, overlap: int = 50) -> list[str]:
+    """Split text into fixed-size overlapping windows, measured in tokens.
+
+    Windows are counted in the tokenizer's tokens but cut from the original
+    string via offsets, so case and spacing are preserved exactly.
 
     Args:
         text: The text to split.
-        size: Window length in CHARACTERS, not tokens — English runs near four
-            characters per token.
-        overlap: Characters each window shares with its predecessor, so a
-            sentence crossing a boundary survives intact in one of them. Must be
-            smaller than `size`.
+        tokenizer: A fast Hugging Face tokenizer (needs offset mapping), ideally
+            the embedding model's own.
+        size: Window length in tokens, excluding special tokens. Keep it below
+            the model limit to leave room for prefixes like `'passage: '`.
+        overlap: Tokens each window shares with its predecessor. Must be smaller
+            than `size`.
 
     Returns:
-        Windows in order, advancing by `size - overlap`. All are `size` long
-        except the last. Slices ignore word boundaries, so they cut mid-word.
-        Empty text gives an empty list.
+        Window texts in order, advancing by `size - overlap` tokens. Windows may
+        start or end mid-word. Empty text gives an empty list.
 
     Raises:
         ValueError: If `overlap >= size`, which would never advance and hang.
@@ -237,14 +256,40 @@ def chunk(text: str, size: int = 4096, overlap: int = 50) -> list[str]:
     if overlap >= size:
         raise ValueError("Overlap must be smaller than chunk size.")
 
+    offsets = tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)['offset_mapping']
     chunks = []
     start = 0
-    while start < len(text):
-        end = min(start + size, len(text))
-        chunks.append(text[start:end])
-        if end == len(text):
+    while start < len(offsets):
+        end = min(start + size, len(offsets))
+        char_start = offsets[start][0]
+        char_end = offsets[end - 1][1]
+        chunks.append(text[char_start:char_end])
+        if end == len(offsets):
             break
         start += size - overlap
+    return chunks
+
+
+def chunk_corpus(corpus: dict[str, Document], tokenizer, size: int = 450,
+                 overlap: int = 50) -> dict[str, Chunk]:
+    """Chunk every document's text, tagging each piece with where it came from.
+
+    Args:
+        corpus: Documents keyed by id, as `load_corpus` returns.
+        tokenizer: Passed through to `chunk`.
+        size: Passed through to `chunk`.
+        overlap: Passed through to `chunk`.
+
+    Returns:
+        Chunks keyed by `chunk_id`, in corpus order. A document shorter than
+        `size` tokens yields exactly one chunk.
+    """
+    chunks = {}
+    for doc_id, doc in corpus.items():
+        for position, text in enumerate(chunk(doc.text, tokenizer, size, overlap)):
+            chunk_id = f"{doc_id}#{position}"
+            chunks[chunk_id] = Chunk(chunk_id=chunk_id, doc_id=doc_id,
+                                     position=position, text=text)
     return chunks
 
 
@@ -270,10 +315,19 @@ def load_scifact_data(path: Path) -> tuple[dict[str, Document], dict[str, str], 
 if __name__ == "__main__":
     from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained("intfloat/e5-small")
-    scifact_data_path = Path(__file__).parents[1] / 'data' / 'scifact'
+    tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained("intfloat/e5-small")
+    scifact_data_path: Path = Path(__file__).parents[1] / 'data' / 'scifact'
     corpus, queries, qrels = load_scifact_data(scifact_data_path)
     check_consistency(corpus, queries, qrels)
 
-    print(f"Corpus stats: {get_corpus_stats(corpus)}")
     print(f"Corpus stats with tokenizer: {get_corpus_stats(corpus, tokenizer)}")
+
+    size, overlap = 450, 50
+    chunks = chunk_corpus(corpus, tokenizer, size, overlap)
+    token_counts = [len(ids) for ids in tokenizer(
+        [c.text for c in chunks.values()], add_special_tokens=False)['input_ids']]
+    chunked_docs = {c.doc_id for c in chunks.values()}
+    print(f"Chunks: {len(chunks)} from {len(corpus)} docs "
+          f"({len(chunks) / len(corpus):.2f} per doc), "
+          f"max tokens per chunk: {max(token_counts)} (size {size})")
+    print(f"Docs without chunks: {len(corpus.keys() - chunked_docs)}")
