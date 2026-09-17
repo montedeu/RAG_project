@@ -1,7 +1,7 @@
 import pytest
-from tokenizers import AutoTokenizer
+from transformers import AutoTokenizer
 
-from src.config import EMBEDDING_MODEL
+from config import EMBEDDING_MODEL
 
 
 @pytest.fixture(scope="session")
