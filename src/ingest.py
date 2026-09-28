@@ -11,7 +11,14 @@ from schema import Chunk, Document
 
 
 def load_jsonl(path: Path) -> list[dict]:
-    """Read a JSON Lines file into one dict per non-blank line."""
+    """Read a JSON Lines file into one dict per non-blank line.
+
+    Args:
+        path: `.jsonl` file, one JSON object per line.
+
+    Returns:
+        The parsed objects in file order; blank lines are skipped.
+    """
     data = []
     with open(path, "r", encoding="utf-8") as file:
         for line in file:
@@ -21,7 +28,14 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def load_corpus(path: Path) -> dict[str, Document]:
-    """Load `corpus.jsonl` as `{doc_id: Document}`."""
+    """Load a BEIR `corpus.jsonl` as `{doc_id: Document}`.
+
+    Args:
+        path: `corpus.jsonl` with `_id`, `title` and `text` fields per line.
+
+    Returns:
+        `{doc_id: Document}` in file order; doc ids stay strings.
+    """
     data = load_jsonl(path)
     corpus = {}
     for item in data:
@@ -33,7 +47,16 @@ def load_corpus(path: Path) -> dict[str, Document]:
 
 
 def load_queries(path: Path) -> dict[str, str]:
-    """Load `queries.jsonl` as `{query_id: text}`, all splits included."""
+    """Load a BEIR `queries.jsonl` as `{query_id: text}`, all splits included.
+
+    `metadata` is dropped; filter to judged queries with `get_evaluable_queries`.
+
+    Args:
+        path: `queries.jsonl` with `_id` and `text` fields per line.
+
+    Returns:
+        `{query_id: query text}` in file order.
+    """
     data = load_jsonl(path)
     queries = {}
     for item in data:
@@ -44,7 +67,14 @@ def load_queries(path: Path) -> dict[str, str]:
 
 
 def load_query_relations(path: Path) -> dict[str, dict[str, int]]:
-    """Load a qrels TSV (`query-id`, `corpus-id`, `score`) as `{query_id: {doc_id: score}}`."""
+    """Load a qrels TSV as `{query_id: {doc_id: score}}`.
+
+    Args:
+        path: tab-separated file with a `query-id`, `corpus-id`, `score` header row.
+
+    Returns:
+        `{query_id: {doc_id: score}}` with integer scores; only judged pairs appear.
+    """
     qrels_mapping = {}
     with open(path, "r", encoding="utf-8") as file:
         reader = csv.DictReader(file, delimiter="\t")
@@ -63,7 +93,17 @@ def check_consistency(
     queries: dict[str, str],
     qrels: dict[str, dict[str, int]],
 ) -> None:
-    """Raise ValueError if qrels reference a query or document that doesn't exist."""
+    """Check that every query and document referenced in qrels exists.
+
+    Args:
+        corpus: `{doc_id: Document}` from `load_corpus`.
+        queries: `{query_id: text}` from `load_queries`.
+        qrels: `{query_id: {doc_id: score}}` from `load_query_relations`.
+
+    Raises:
+        ValueError: on the first qrels query id missing from `queries`, or doc id
+            missing from `corpus`.
+    """
     for query_id in qrels:
         if query_id not in queries:
             raise ValueError(f"Query ID {query_id} in qrels does not exist in queries.")
@@ -79,7 +119,15 @@ def check_consistency(
 def get_evaluable_queries(
     queries: dict[str, str], qrels: dict[str, dict[str, int]]
 ) -> dict[str, str]:
-    """Keep only queries that have relevance judgements (300 of 1109 for SciFact)."""
+    """Keep only queries that have relevance judgements (300 of 1109 for SciFact).
+
+    Args:
+        queries: `{query_id: text}`, typically all splits.
+        qrels: `{query_id: {doc_id: score}}` for the split being evaluated.
+
+    Returns:
+        `{query_id: text}` for the queries present in `qrels`, in `queries` order.
+    """
     evaluable_queries = {}
     for query_id, query_text in queries.items():
         if query_id in qrels:
@@ -101,7 +149,19 @@ def _length_stats(lengths: list[int], unit: str) -> dict[str, float]:
 def get_corpus_stats(
     corpus: dict[str, Document], tokenizer=None, token_limit: int = TOKEN_LIMIT
 ) -> dict[str, float]:
-    """Length stats of title + text: chars always, tokens and overflow count with a tokenizer."""
+    """Length stats of each document's title + text.
+
+    Args:
+        corpus: `{doc_id: Document}`.
+        tokenizer: optional Hugging Face tokenizer; without it only character stats
+            are computed. Token counts include special tokens.
+        token_limit: model input limit used for the overflow count.
+
+    Returns:
+        `num_documents`, then `mean/median/p95/max_chars`; with a tokenizer also
+        `mean/median/p95/max_tokens` and `docs_over_{token_limit}_tokens`.
+        An empty corpus gives `{"num_documents": 0}`.
+    """
     if not corpus:
         return {"num_documents": 0}
 
@@ -127,6 +187,15 @@ def chunk(
 
     Windows are cut from the original string via token offsets, so text is
     preserved exactly, but may start or end mid-word.
+
+    Args:
+        text: document body to split.
+        tokenizer: Hugging Face *fast* tokenizer (needs `return_offsets_mapping`).
+        size: window length in tokens, special tokens not counted.
+        overlap: tokens shared by consecutive windows; the step is `size - overlap`.
+
+    Returns:
+        Chunk strings in document order; empty or whitespace-only text gives `[]`.
 
     Raises:
         ValueError: If `overlap >= size`.
@@ -167,6 +236,16 @@ def chunk_by_sentence(
 
     Trailing sentences fitting in `overlap` tokens are repeated in the next
     chunk. A sentence longer than `size` is split with `chunk`.
+
+    Args:
+        text: document body to split; sentences are found with `SENTENCE_PATTERN`.
+        tokenizer: Hugging Face fast tokenizer, used for counting tokens.
+        size: maximum chunk length in tokens, special tokens not counted.
+        overlap: token budget for the whole sentences carried into the next chunk.
+
+    Returns:
+        Chunk strings sliced from `text`, in document order; text with no
+        non-whitespace characters gives `[]`.
 
     Raises:
         ValueError: If `overlap >= size`.
@@ -227,7 +306,25 @@ def chunk_corpus(
     size: int = CHUNK_SIZE,
     overlap: int = CHUNK_OVERLAP,
 ) -> dict[str, Chunk]:
-    """Split every document with `chunker` and return `{chunk_id: Chunk}`."""
+    """Split every document's text with `chunker` and return `{chunk_id: Chunk}`.
+
+    Only `doc.text` is chunked; the title is copied onto each chunk unchanged.
+
+    Args:
+        corpus: `{doc_id: Document}`.
+        tokenizer: passed through to `chunker`.
+        chunker: `chunk`, `chunk_by_sentence`, or any function with the signature
+            `(text, tokenizer, size, overlap) -> list[str]`.
+        size: maximum chunk length in tokens, passed to `chunker`.
+        overlap: overlap in tokens, passed to `chunker`.
+
+    Returns:
+        `{chunk_id: Chunk}` with `chunk_id = '{doc_id}#{position}'`, ordered by
+        document then position. Documents with empty text get no chunks.
+
+    Raises:
+        ValueError: from `chunker` if `overlap >= size`.
+    """
     chunks = {}
     for doc_id, doc in corpus.items():
         for position, text in enumerate(chunker(doc.text, tokenizer, size, overlap)):
@@ -245,7 +342,15 @@ def chunk_corpus(
 def load_scifact_data(
     path: Path,
 ) -> tuple[dict[str, Document], dict[str, str], dict[str, dict[str, int]]]:
-    """Load corpus, queries and test qrels from a SciFact directory."""
+    """Load corpus, queries and test qrels from a BEIR-format directory.
+
+    Args:
+        path: directory containing `corpus.jsonl`, `queries.jsonl` and `qrels/test.tsv`.
+
+    Returns:
+        `(corpus, queries, qrels)`: `{doc_id: Document}`, `{query_id: text}` for all
+        splits, and `{query_id: {doc_id: score}}` for the test split.
+    """
     corpus = load_corpus(path / "corpus.jsonl")
     queries = load_queries(path / "queries.jsonl")
     qrels = load_query_relations(path / "qrels" / "test.tsv")
