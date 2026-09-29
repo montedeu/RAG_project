@@ -6,9 +6,13 @@ PROJECT_ROOT = Path(__file__).parents[1]
 SCIFACT_DIR = PROJECT_ROOT / "data" / "scifact"
 # Hand-written queries over the SciFact corpus; ids h1..h20, metadata.type keyword/paraphrase.
 HANDWRITTEN_DIR = PROJECT_ROOT / "data" / "handwritten"
+ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
 
 EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
 TOKEN_LIMIT = 512
+# e5 is trained with these prefixes; bge-m3 uses none, so change them with the model.
+PASSAGE_PREFIX = "passage: "
+QUERY_PREFIX = "query: "
 
 # Chunk budget leaves room for special tokens, "passage: " and the title (max 80 tokens).
 CHUNK_SIZE = 400
