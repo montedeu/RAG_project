@@ -4,9 +4,12 @@ import hashlib
 from pathlib import Path
 
 import numpy as np
+from pymilvus import DataType, MilvusClient
 
 from config import ARTIFACTS_DIR, PASSAGE_PREFIX, QUERY_PREFIX
 from schema import Chunk
+
+BATCH_SIZE = 1024
 
 
 def format_passage(chunk: Chunk, with_title: bool = True) -> str:
@@ -128,3 +131,53 @@ def _load_cache(path: Path, ids: list[str], fingerprint: str) -> np.ndarray | No
         if cache["ids"].tolist() == ids and str(cache["fingerprint"]) == fingerprint:
             return cache["vectors"]
     return None
+
+
+def build_index(
+    ids: list[str], vectors: np.ndarray, db_path: Path, collection: str
+) -> MilvusClient:
+    """
+    Build a Milvus Lite collection with one row per id and vector.
+
+    Args:
+        ids: list of chunk ids, one per row.
+        vectors: float32 array of shape (len(ids), embedding_dim) with unit-length rows
+        db_path: path to the Milvus Lite database directory; missing parent directories are created.
+        collection: name of the Milvus collection to create; if it exists, it is dropped and recreated.
+
+    Returns:
+        MilvusClient connected to the new collection.
+
+    Raises:
+        ValueError: if `ids` is empty or if `len(ids) != len(vectors)`.
+    """
+    if not ids:
+        raise ValueError("ids is empty: nothing to index")
+    if len(ids) != len(vectors):
+        raise ValueError(f"len(ids)={len(ids)} != len(vectors)={len(vectors)}")
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    client = MilvusClient(str(db_path))
+    schema = client.create_schema(auto_id=False)
+    schema.add_field("chunk_id", DataType.VARCHAR, is_primary=True, max_length=64)
+    schema.add_field("vector", DataType.FLOAT_VECTOR, dim=vectors.shape[1])
+
+    index = client.prepare_index_params()
+    index.add_index("vector", index_type="FLAT", metric_type="IP")
+
+    if client.has_collection(collection):
+        client.drop_collection(collection)
+    client.create_collection(collection, schema=schema, index_params=index)
+
+    for start in range(0, len(ids), BATCH_SIZE):
+        batch_ids = ids[start : start + BATCH_SIZE]
+        batch_vectors = vectors[start : start + BATCH_SIZE]
+        client.insert(
+            collection,
+            [
+                {"chunk_id": i, "vector": v.tolist()}
+                for i, v in zip(batch_ids, batch_vectors)
+            ],
+        )
+    return client
