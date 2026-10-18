@@ -1,7 +1,9 @@
 .venv
 .env
-data/
+data/*
 artifacts/
 scripts/
 __pycache__/
 CLAUDE.md
+
+!data/handwritten/

@@ -46,9 +46,9 @@ Each dataset directory:
 
 Hand-written set details:
 - One relevant doc per query, score 1.
-- `metadata.type` is `"keyword"` (reuses the abstract's words) or `"paraphrase"` (avoids them), 10 of each.
+- `metadata.type` is `"keyword"` (reuses the abstract's words) or `"paraphrase"` (avoids them): 11 keyword, 9 paraphrase. h13 is a weak paraphrase (it reuses much of its abstract's wording).
 - The questions were checked against competing docs, but not against every doc, so an unjudged relevant doc is possible.
-- `load_queries` drops `metadata`. Reading the type will need a small loader (*planned*).
+- `load_queries` drops `metadata`; `load_query_types` reads the type. To score one type, filter qrels to its query ids and call `evaluate`.
 
 ## 4. In-memory types (`src/schema.py`)
 
@@ -66,8 +66,9 @@ Chunk(chunk_id: str, doc_id: str, position: int, title: str, text: str)
 |---|---|
 | `load_corpus(path)` | `{doc_id: Document}` |
 | `load_queries(path)` | `{query_id: text}`, all splits |
+| `load_query_types(path)` | `{query_id: metadata.type}`; raises `ValueError` if a query has no type |
 | `load_query_relations(path)` | `{query_id: {doc_id: score}}` |
-| `load_scifact_data(dir)` | `(corpus, queries, test qrels)` |
+| `load_beir(dir)` | `(corpus, queries, test qrels)` from `corpus.jsonl`, `queries.jsonl`, `qrels/test.tsv` |
 | `get_evaluable_queries(queries, qrels)` | only the queries that have qrels |
 | `check_consistency(corpus, queries, qrels)` | `None`; raises `ValueError` if qrels reference an unknown query or doc |
 

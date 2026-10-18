@@ -66,6 +66,32 @@ def load_queries(path: Path) -> dict[str, str]:
     return queries
 
 
+def load_query_types(path: Path) -> dict[str, str]:
+    """Load each query's `metadata.type` from a BEIR `queries.jsonl`.
+
+    For the hand-written set, whose queries are typed "keyword" (reuses the
+    abstract's words) or "paraphrase" (avoids them), so results can be split by type.
+
+    Args:
+        path: `queries.jsonl` whose lines have `_id` and `metadata.type`.
+
+    Returns:
+        `{query_id: type}` in file order, e.g. `{"h1": "paraphrase", "h2": "keyword"}`.
+
+    Raises:
+        ValueError: if a query has no `metadata.type`.
+    """
+    data = load_jsonl(path)
+    query_types = {}
+    for item in data:
+        query_id = item["_id"]
+        query_type = item.get("metadata", {}).get("type")
+        if query_type is None:
+            raise ValueError(f"Query {query_id} has no metadata.type.")
+        query_types[query_id] = query_type
+    return query_types
+
+
 def load_query_relations(path: Path) -> dict[str, dict[str, int]]:
     """Load a qrels TSV as `{query_id: {doc_id: score}}`.
 
@@ -339,7 +365,7 @@ def chunk_corpus(
     return chunks
 
 
-def load_scifact_data(
+def load_beir(
     path: Path,
 ) -> tuple[dict[str, Document], dict[str, str], dict[str, dict[str, int]]]:
     """Load corpus, queries and test qrels from a BEIR-format directory.
@@ -360,15 +386,17 @@ def load_scifact_data(
 if __name__ == "__main__":
     from transformers import AutoTokenizer
 
+    from dense import format_passage
+
     tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL)
-    corpus, queries, qrels = load_scifact_data(SCIFACT_DIR)
+    corpus, queries, qrels = load_beir(SCIFACT_DIR)
     check_consistency(corpus, queries, qrels)
 
     print(f"Corpus stats with tokenizer: {get_corpus_stats(corpus, tokenizer)}")
 
     for chunker in (chunk, chunk_by_sentence):
         chunks = chunk_corpus(corpus, tokenizer, chunker=chunker)
-        indexed = [f"passage: {c.title}. {c.text}" for c in chunks.values()]
+        indexed = [format_passage(c) for c in chunks.values()]
         token_counts = [len(ids) for ids in tokenizer(indexed)["input_ids"]]
         chunked_docs = {c.doc_id for c in chunks.values()}
         print(
