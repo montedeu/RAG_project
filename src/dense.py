@@ -1,6 +1,9 @@
 """Dense retrieval: embedding-model input formatting, embeddings and vector search."""
 
+import hashlib
 from pathlib import Path
+
+import numpy as np
 
 from config import ARTIFACTS_DIR, PASSAGE_PREFIX, QUERY_PREFIX
 from schema import Chunk
@@ -66,3 +69,62 @@ def cache_path(
         ARTIFACTS_DIR
         / f"emb__{model}__{chunker_name}__{size}_{overlap}__{title_tag}.npz"
     )
+
+
+def embed_chunks(
+    chunks: dict[str, Chunk], model, path: Path, with_title: bool = True
+) -> tuple[list[str], np.ndarray]:
+    """Embed every chunk's passage string, reusing the cache file when it still matches.
+
+    The cache stores the ids, the vectors and a sha256 fingerprint of the exact
+    passage strings. It is reused only when both the ids (in order) and the
+    fingerprint match, so changed text, chunking or title setting is re-embedded
+    even at the same path; a stale file is overwritten.
+
+    Args:
+        chunks: `{chunk_id: Chunk}` from `chunk_corpus`; dict order sets the row order.
+        model: a loaded SentenceTransformer, or anything with the same
+            `encode(texts, **kwargs) -> np.ndarray` method.
+        path: `.npz` cache file, normally from `cache_path`; missing parent
+            directories are created.
+        with_title: whether to put each chunk's document title before its body.
+
+    Returns:
+        `(ids, vectors)`: `ids` is `list(chunks)`; `vectors` is a float32 array of
+        shape `(len(ids), embedding_dim)` whose row i is the unit-length
+        embedding of `ids[i]`.
+
+    Raises:
+        ValueError: if `chunks` is empty.
+    """
+    if not chunks:
+        raise ValueError("chunks is empty: nothing to embed")
+
+    ids = list(chunks)
+    texts = [format_passage(c, with_title) for c in chunks.values()]
+    # "\0" separator: without one, ["ab", "c"] and ["a", "bc"] would hash the same.
+    fingerprint = hashlib.sha256("\0".join(texts).encode()).hexdigest()
+
+    cached = _load_cache(path, ids, fingerprint)
+    if cached is not None:
+        return ids, cached
+
+    vectors = model.encode(
+        texts,
+        normalize_embeddings=True,
+        batch_size=32,
+        show_progress_bar=True,
+    ).astype(np.float32, copy=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, ids=ids, vectors=vectors, fingerprint=fingerprint)
+    return ids, vectors
+
+
+def _load_cache(path: Path, ids: list[str], fingerprint: str) -> np.ndarray | None:
+    """Cached vectors at `path` if its ids and fingerprint match, else None."""
+    if not path.exists():
+        return None
+    with np.load(path) as cache:
+        if cache["ids"].tolist() == ids and str(cache["fingerprint"]) == fingerprint:
+            return cache["vectors"]
+    return None
