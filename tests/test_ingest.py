@@ -39,6 +39,7 @@ get_corpus_stats:
 - character stats are computed on "title text"
 """
 
+import itertools
 import json
 
 import pytest
@@ -55,8 +56,8 @@ from ingest import (
     load_corpus,
     load_jsonl,
     load_queries,
-    load_query_types,
     load_query_relations,
+    load_query_types,
 )
 from schema import Document
 
@@ -148,8 +149,11 @@ def test_chunk_by_sentence_overlap_repeats_last_sentence(tokenizer):
     text = "One two three. Four five six. Seven eight nine. Ten eleven twelve."
     chunks = chunk_by_sentence(text, tokenizer, size=12, overlap=5)
     assert len(chunks) > 1
-    for current, following in zip(chunks, chunks[1:]):
-        assert SENTENCE_PATTERN.findall(current)[-1] == SENTENCE_PATTERN.findall(following)[0]
+    for current, following in itertools.pairwise(chunks):
+        assert (
+            SENTENCE_PATTERN.findall(current)[-1]
+            == SENTENCE_PATTERN.findall(following)[0]
+        )
 
 
 def test_chunk_by_sentence_sentence_longer_than_size_is_split(tokenizer):
@@ -231,7 +235,9 @@ def test_sentence_pattern_splits_correctly(text, expected):
 
 # chunk_corpus
 
-LONG_TEXT = "One two three four. Five six seven eight. Nine ten eleven twelve. Thirteen."
+LONG_TEXT = (
+    "One two three four. Five six seven eight. Nine ten eleven twelve. Thirteen."
+)
 
 
 def test_chunk_corpus_empty_corpus_returns_empty_dict(tokenizer):
@@ -342,7 +348,9 @@ def test_load_query_types(tmp_path):
 )
 def test_load_query_types_missing_type_raises(tmp_path, row):
     path = tmp_path / "queries.jsonl"
-    _write_jsonl(path, [{"_id": "h1", "text": "q", "metadata": {"type": "keyword"}}, row])
+    _write_jsonl(
+        path, [{"_id": "h1", "text": "q", "metadata": {"type": "keyword"}}, row]
+    )
     with pytest.raises(ValueError, match="Query h2 has no metadata.type"):
         load_query_types(path)
 
@@ -355,7 +363,9 @@ def test_load_query_relations(tmp_path):
 
 def test_load_beir(tmp_path):
     _write_jsonl(tmp_path / "corpus.jsonl", [{"_id": "10", "title": "T", "text": "x"}])
-    _write_jsonl(tmp_path / "queries.jsonl", [{"_id": "1", "text": "q", "metadata": {}}])
+    _write_jsonl(
+        tmp_path / "queries.jsonl", [{"_id": "1", "text": "q", "metadata": {}}]
+    )
     _write_qrels(tmp_path / "qrels" / "test.tsv", [("1", "10", 1)])
     corpus, queries, qrels = load_beir(tmp_path)
     assert corpus == {"10": Document("10", "T", "x")}

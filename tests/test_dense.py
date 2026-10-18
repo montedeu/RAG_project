@@ -25,6 +25,13 @@ embed_chunks:
   and the new vectors are returned
 - a stale cache is overwritten, so the next identical call is a cache hit
 - empty chunks raise ValueError
+build_index (real Milvus Lite in tmp_path):
+- the collection holds one row per id
+- each vector is stored under its own id
+- missing parent directories of the .db path are created
+- a rebuild drops the old collection (old ids are gone, count is the new one)
+- more rows than one insert batch are all inserted (partial last batch included)
+- mismatched ids/vectors lengths and empty input raise ValueError
 """
 
 import dataclasses
@@ -34,7 +41,7 @@ import numpy as np
 import pytest
 
 from config import ARTIFACTS_DIR
-from dense import cache_path, embed_chunks, format_passage, format_query
+from dense import build_index, cache_path, embed_chunks, format_passage, format_query
 from schema import Chunk
 
 DIM = 3
@@ -99,7 +106,9 @@ def _change_text(chunks):
 
 def _expected_vectors(chunks, with_title=True):
     """FakeEncoder's vectors for these chunks' passages, in dict order."""
-    return np.stack([fake_vector(format_passage(c, with_title)) for c in chunks.values()])
+    return np.stack(
+        [fake_vector(format_passage(c, with_title)) for c in chunks.values()]
+    )
 
 
 @pytest.mark.parametrize(
@@ -302,3 +311,78 @@ def test_embed_chunks_creates_parent_dir(encoder, tmp_path, chunks):
 def test_embed_chunks_empty_raises(encoder, tmp_path):
     with pytest.raises(ValueError, match="chunks is empty"):
         embed_chunks({}, encoder, tmp_path / "emb.npz")
+
+
+COLLECTION = "test_collection"
+INDEX_IDS = ["a#0", "b#0", "c#0"]
+# Unit length, no ties: query [1, 0, 0] ranks a (1.0), b (0.8), c (0.0).
+INDEX_VECTORS = np.array([[1, 0, 0], [0.8, 0.6, 0], [0, 0, 1]], dtype=np.float32)
+
+
+@pytest.fixture
+def index(tmp_path):
+    """A Milvus Lite index of INDEX_IDS / INDEX_VECTORS, closed after the test."""
+    client = build_index(INDEX_IDS, INDEX_VECTORS, tmp_path / "index.db", COLLECTION)
+    yield client
+    client.close()
+
+
+def test_build_index_row_count(index):
+    assert index.get_collection_stats(COLLECTION)["row_count"] == len(INDEX_IDS)
+
+
+def test_build_index_stores_each_vector_under_its_id(index):
+    rows = index.get(COLLECTION, ids=INDEX_IDS)
+    stored = {row["chunk_id"]: row["vector"] for row in rows}
+    assert stored.keys() == set(INDEX_IDS)
+    for chunk_id, vector in zip(INDEX_IDS, INDEX_VECTORS):
+        assert stored[chunk_id] == pytest.approx(vector.tolist())
+
+
+def test_build_index_creates_missing_parent_dir(tmp_path):
+    path = tmp_path / "sub" / "index.db"
+    client = build_index(INDEX_IDS, INDEX_VECTORS, path, COLLECTION)
+    try:
+        assert path.exists()
+    finally:
+        client.close()
+
+
+def test_build_index_rebuild_replaces_old_data(tmp_path):
+    # New ids are disjoint from the old ones: re-inserting an existing id doesn't
+    # add a row, so a rebuild that reused the old ids would pass even without a drop.
+    path = tmp_path / "index.db"
+    build_index(INDEX_IDS, INDEX_VECTORS, path, COLLECTION).close()
+    client = build_index(["x#0", "y#0"], INDEX_VECTORS[:2], path, COLLECTION)
+    try:
+        assert client.get_collection_stats(COLLECTION)["row_count"] == 2
+        assert len(client.get(COLLECTION, ids=INDEX_IDS)) == 0
+    finally:
+        client.close()
+
+
+def test_build_index_inserts_more_rows_than_one_batch(tmp_path):
+    # 2500 rows: several full insert batches plus a partial last one.
+    n = 2500
+    rng = np.random.default_rng(0)
+    vectors = rng.normal(size=(n, DIM)).astype(np.float32)
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    ids = [f"d{i}#0" for i in range(n)]
+    client = build_index(ids, vectors, tmp_path / "index.db", COLLECTION)
+    try:
+        assert client.get_collection_stats(COLLECTION)["row_count"] == n
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    "ids, vectors, message",
+    [
+        (INDEX_IDS[:-1], INDEX_VECTORS, r"len\(ids\)=2 != len\(vectors\)=3"),
+        ([], np.empty((0, DIM), dtype=np.float32), "nothing to index"),
+    ],
+    ids=["length-mismatch", "empty"],
+)
+def test_build_index_bad_input_raises(tmp_path, ids, vectors, message):
+    with pytest.raises(ValueError, match=message):
+        build_index(ids, vectors, tmp_path / "index.db", COLLECTION)
