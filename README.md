@@ -91,8 +91,8 @@ wget https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.
 unzip scifact.zip && cd ..
 ```
 
-The hand-written queries go in `data/handwritten/` (`queries.jsonl` + `qrels/test.tsv`,
-BEIR format).
+The hand-written queries are included in the repository at `data/handwritten/`
+(`queries.jsonl` + `qrels/test.tsv`, BEIR format).
 
 Models are downloaded from the Hugging Face Hub on first use. Once they're cached, set
 `HF_HUB_OFFLINE=1` to skip the network check.

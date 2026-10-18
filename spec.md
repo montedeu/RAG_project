@@ -136,6 +136,15 @@ Sanity baselines (`.venv/bin/python src/evaluate.py`):
 
 Embedding cache (`.npz`): keys `ids`, `vectors`, `fingerprint` (sha256 of the passage strings joined with `"\0"`). The cache is reused only if the ids (in order) **and** the fingerprint match. Otherwise the chunks are re-embedded and the file is overwritten. `model` is anything with `encode(texts, **kwargs)`; the tests pass a fake.
 
+`build_index(ids, vectors, db_path, collection) -> MilvusClient` loads `(ids, vectors)` from `embed_chunks` into Milvus Lite:
+- `db_path` must end in `.db`. Missing parent directories are created. Milvus Lite stores it as a directory.
+- An existing collection with the same name is **dropped and rebuilt** on every call, so it can never hold stale vectors.
+- Schema: `chunk_id` VARCHAR(64) primary key, `vector` FLOAT_VECTOR(`vectors.shape[1]`).
+- Index: `FLAT` (exact search; ~7k vectors is tiny), metric `IP` (inner product). The vectors are unit length, so this equals cosine. In search results, `distance` is a similarity: higher is better.
+- Rows are inserted in batches of `BATCH_SIZE` (1024).
+- Returns an open client; the caller must `close()` it.
+- Raises `ValueError` if `ids` is empty or `len(ids) != len(vectors)`.
+
 ## 9. Planned interfaces
 
 *Planned. Record the real signature here once written.*
