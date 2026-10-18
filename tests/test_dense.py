@@ -13,13 +13,93 @@ cache_path:
 - changing any one argument changes the path
 - "/" in the model id doesn't create a subdirectory (parent is ARTIFACTS_DIR)
 - path ends in .npz, matching the file np.savez writes
+embed_chunks:
+- ids come back in the input dict's order (fixture is deliberately unsorted)
+- vectors are float32 with shape (n_chunks, dim)
+- the model receives format_passage strings, with and without title
+- row i of the vectors belongs to ids[i]
+- normalize_embeddings=True is requested from the model
+- the first call writes the cache file, creating missing parent directories
+- a second identical call is served from the cache (no encode, same result)
+- a stale cache (chunk added, removed, text changed, title toggled) is re-embedded
+  and the new vectors are returned
+- a stale cache is overwritten, so the next identical call is a cache hit
+- empty chunks raise ValueError
 """
 
+import dataclasses
+import hashlib
+
+import numpy as np
 import pytest
 
 from config import ARTIFACTS_DIR
-from dense import cache_path, format_passage, format_query
+from dense import cache_path, embed_chunks, format_passage, format_query
 from schema import Chunk
+
+DIM = 3
+
+
+def fake_vector(text: str) -> np.ndarray:
+    """Deterministic DIM-length vector derived from the text's hash."""
+    digest = hashlib.sha256(text.encode()).digest()
+    return np.frombuffer(digest[:DIM], dtype=np.uint8).astype(np.float32)
+
+
+class FakeEncoder:
+    """Stands in for SentenceTransformer: records each encode call, returns fake vectors."""
+
+    def __init__(self):
+        self.calls = []
+
+    def encode(self, texts, **kwargs):
+        self.calls.append({"texts": list(texts), "kwargs": kwargs})
+        return np.stack([fake_vector(text) for text in texts])
+
+
+def _chunk(doc_id: str, position: int, title: str, text: str) -> Chunk:
+    """Build a Chunk with a consistent '{doc_id}#{position}' id."""
+    return Chunk(f"{doc_id}#{position}", doc_id, position, title, text)
+
+
+@pytest.fixture(scope="function")
+def encoder():
+    """A fresh FakeEncoder with no recorded calls."""
+    return FakeEncoder()
+
+
+@pytest.fixture(scope="function")
+def chunks():
+    """Three chunks, two from doc 1, deliberately not in sorted id order."""
+    return {
+        c.chunk_id: c
+        for c in [
+            _chunk("2", 0, "Is X safe?", "Short answer: yes."),
+            _chunk("1", 0, "Aspirin and stroke", "We studied 40 patients."),
+            _chunk("1", 1, "Aspirin and stroke", "Risk fell by half."),
+        ]
+    }
+
+
+def _add_chunk(chunks):
+    """Variant with one extra chunk from a new doc."""
+    return {**chunks, "3#0": _chunk("3", 0, "New doc", "Extra text.")}
+
+
+def _remove_chunk(chunks):
+    """Variant without the last chunk."""
+    return dict(list(chunks.items())[:-1])
+
+
+def _change_text(chunks):
+    """Variant with the same ids but the first chunk's text edited."""
+    first = next(iter(chunks))
+    return {**chunks, first: dataclasses.replace(chunks[first], text="Edited.")}
+
+
+def _expected_vectors(chunks, with_title=True):
+    """FakeEncoder's vectors for these chunks' passages, in dict order."""
+    return np.stack([fake_vector(format_passage(c, with_title)) for c in chunks.values()])
 
 
 @pytest.mark.parametrize(
@@ -94,3 +174,131 @@ def test_cache_path_parent_directory():
 
 def test_cache_path_ends_in_npz():
     assert cache_path(**BASE).suffix == ".npz"
+
+
+def test_embed_chunks_returns_ids_in_input_order(encoder, tmp_path, chunks):
+    ids, _ = embed_chunks(
+        chunks,
+        encoder,
+        tmp_path / "emb.npz",
+    )
+    assert ids == list(chunks)
+
+
+def test_embed_chunks_vector_shape_and_dtype(encoder, tmp_path, chunks):
+    _, vectors = embed_chunks(
+        chunks,
+        encoder,
+        tmp_path / "emb.npz",
+    )
+    assert vectors.shape == (len(chunks), DIM)
+    assert vectors.dtype == np.float32
+
+
+@pytest.mark.parametrize(
+    "with_title",
+    [
+        pytest.param(True, id="with-title"),
+        pytest.param(False, id="without-title"),
+    ],
+)
+def test_embed_chunks_encodes_formatted_passages(encoder, tmp_path, chunks, with_title):
+    embed_chunks(
+        chunks,
+        encoder,
+        tmp_path / "emb.npz",
+        with_title=with_title,
+    )
+    assert encoder.calls[0]["texts"] == [
+        format_passage(chunk, with_title) for chunk in chunks.values()
+    ]
+
+
+def test_embed_chunks_rows_match_ids(encoder, tmp_path, chunks):
+    ids, vectors = embed_chunks(
+        chunks,
+        encoder,
+        tmp_path / "emb.npz",
+    )
+    np.testing.assert_array_equal(
+        vectors, np.stack([fake_vector(format_passage(chunks[i])) for i in ids])
+    )
+
+
+def test_embed_chunks_requests_normalisation(encoder, tmp_path, chunks):
+    embed_chunks(
+        chunks,
+        encoder,
+        tmp_path / "emb.npz",
+    )
+    assert encoder.calls[0]["kwargs"]["normalize_embeddings"] is True
+
+
+def test_embed_chunks_writes_cache(encoder, tmp_path, chunks):
+    path = tmp_path / "emb.npz"
+    embed_chunks(chunks, encoder, path)
+    assert path.exists()
+
+
+def test_embed_chunks_cache_hit(encoder, tmp_path, chunks):
+    path = tmp_path / "emb.npz"
+    first_ids, first_vectors = embed_chunks(chunks, encoder, path)
+    ids, vectors = embed_chunks(chunks, encoder, path)
+    assert len(encoder.calls) == 1
+    assert ids == first_ids
+    np.testing.assert_array_equal(vectors, first_vectors)
+
+
+stale_variants = pytest.mark.parametrize(
+    "make_variant",
+    [_add_chunk, _remove_chunk, _change_text],
+    ids=["add-chunk", "remove-chunk", "change-text"],
+)
+
+
+@stale_variants
+def test_embed_chunks_stale_cache_reembeds(encoder, tmp_path, chunks, make_variant):
+    path = tmp_path / "emb.npz"
+    variant = make_variant(chunks)
+    embed_chunks(chunks, encoder, path)
+    ids, vectors = embed_chunks(variant, encoder, path)
+    assert len(encoder.calls) == 2
+    assert ids == list(variant)
+    np.testing.assert_array_equal(vectors, _expected_vectors(variant))
+
+
+@stale_variants
+def test_embed_chunks_stale_cache_is_overwritten(
+    encoder, tmp_path, chunks, make_variant
+):
+    path = tmp_path / "emb.npz"
+    variant = make_variant(chunks)
+    embed_chunks(chunks, encoder, path)
+    embed_chunks(variant, encoder, path)
+    ids, vectors = embed_chunks(variant, encoder, path)
+    assert len(encoder.calls) == 2
+    assert ids == list(variant)
+    np.testing.assert_array_equal(vectors, _expected_vectors(variant))
+
+
+def test_embed_chunks_title_toggle_reembeds(encoder, tmp_path, chunks):
+    path = tmp_path / "emb.npz"
+    embed_chunks(chunks, encoder, path, with_title=True)
+    _, vectors = embed_chunks(chunks, encoder, path, with_title=False)
+    assert len(encoder.calls) == 2
+    np.testing.assert_array_equal(vectors, _expected_vectors(chunks, with_title=False))
+
+
+def test_embed_chunks_creates_parent_dir(encoder, tmp_path, chunks):
+    path = tmp_path / "subdir" / "emb.npz"
+    embed_chunks(
+        chunks,
+        encoder,
+        path,
+    )
+    assert path.exists()
+
+
+def test_embed_chunks_empty_raises(encoder, tmp_path):
+    with pytest.raises(ValueError, match="chunks is empty"):
+        embed_chunks({}, encoder, tmp_path / "emb.npz")
