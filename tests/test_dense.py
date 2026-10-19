@@ -32,6 +32,18 @@ build_index (real Milvus Lite in tmp_path):
 - a rebuild drops the old collection (old ids are gone, count is the new one)
 - more rows than one insert batch are all inserted (partial last batch included)
 - mismatched ids/vectors lengths and empty input raise ValueError
+embed_queries:
+- ids come back in the input dict's order (fixture is deliberately unsorted)
+- vectors are float32 with shape (n_queries, dim)
+- the model receives format_query strings
+- row i of the vectors belongs to ids[i]
+- normalize_embeddings=True is requested from the model
+search (real Milvus Lite, hand-picked query vectors):
+- each query gets its own full ranking, best first by inner product; keys keep
+  query_ids order
+- depth truncates to the best `depth` chunks
+- depth above the row count returns every row
+- empty ids, ids/vectors length mismatch and depth < 1 raise ValueError
 """
 
 import dataclasses
@@ -41,7 +53,15 @@ import numpy as np
 import pytest
 
 from config import ARTIFACTS_DIR
-from dense import build_index, cache_path, embed_chunks, format_passage, format_query
+from dense import (
+    build_index,
+    cache_path,
+    embed_chunks,
+    embed_queries,
+    format_passage,
+    format_query,
+    search,
+)
 from schema import Chunk
 
 DIM = 3
@@ -61,7 +81,7 @@ class FakeEncoder:
 
     def encode(self, texts, **kwargs):
         self.calls.append({"texts": list(texts), "kwargs": kwargs})
-        return np.stack([fake_vector(text) for text in texts])
+        return np.stack([fake_vector(text) for text in texts]).astype(np.float64)
 
 
 def _chunk(doc_id: str, position: int, title: str, text: str) -> Chunk:
@@ -85,6 +105,16 @@ def chunks():
             _chunk("1", 0, "Aspirin and stroke", "We studied 40 patients."),
             _chunk("1", 1, "Aspirin and stroke", "Risk fell by half."),
         ]
+    }
+
+
+@pytest.fixture(scope="function")
+def queries():
+    """Three queries, deliberately not in sorted id order."""
+    return {
+        "q2": "Is X safe?",
+        "h7": "Aspirin prevents stroke",
+        "q1": "Risk fell by half",
     }
 
 
@@ -386,3 +416,84 @@ def test_build_index_inserts_more_rows_than_one_batch(tmp_path):
 def test_build_index_bad_input_raises(tmp_path, ids, vectors, message):
     with pytest.raises(ValueError, match=message):
         build_index(ids, vectors, tmp_path / "index.db", COLLECTION)
+
+
+def test_embed_queries_empty_raises(encoder):
+    with pytest.raises(ValueError, match="queries is empty: nothing to embed"):
+        embed_queries({}, encoder)
+
+
+def test_embed_queries_returns_ids_in_input_order(encoder, queries):
+    ids, _ = embed_queries(queries, encoder)
+    assert ids == list(queries)
+
+
+def test_embed_queries_vector_shape_and_dtype(encoder, queries):
+    _, vectors = embed_queries(queries, encoder)
+    assert vectors.shape == (len(queries), DIM)
+    assert vectors.dtype == np.float32
+
+
+def test_embed_queries_encodes_formatted_queries(encoder, queries):
+    embed_queries(queries, encoder)
+    assert encoder.calls[0]["texts"] == [
+        format_query(text) for text in queries.values()
+    ]
+
+
+def test_embed_queries_rows_match_ids(encoder, queries):
+    ids, vectors = embed_queries(queries, encoder)
+    np.testing.assert_array_equal(
+        vectors, np.stack([fake_vector(format_query(queries[i])) for i in ids])
+    )
+
+
+def test_embed_queries_requests_normalisation(encoder, queries):
+    embed_queries(queries, encoder)
+    assert encoder.calls[0]["kwargs"]["normalize_embeddings"] is True
+
+
+SEARCH_IDS = ["q2", "h7", "q1"]
+# Unit length, no ties against INDEX_VECTORS; each row ranks the index differently.
+SEARCH_VECTORS = np.array([[1, 0, 0], [0.6, 0.8, 0], [0.6, 0, 0.8]], dtype=np.float32)
+EXPECTED_RUN = {
+    "q2": ["a#0", "b#0", "c#0"],  # IP: a 1.0, b 0.8, c 0.0
+    "h7": ["b#0", "a#0", "c#0"],  # IP: b 0.6*0.8 + 0.8*0.6 = 0.96, a 0.6, c 0.0
+    "q1": ["c#0", "a#0", "b#0"],  # IP: c 0.8, a 0.6, b 0.6*0.8 = 0.48
+}
+
+
+@pytest.mark.parametrize(
+    "query_ids, query_vectors, depth, message",
+    [
+        ([], np.empty((0, DIM), dtype=np.float32), 3, "nothing to search"),
+        (
+            SEARCH_IDS,
+            SEARCH_VECTORS[:2],
+            3,
+            r"len\(query_ids\)=3 != len\(query_vectors\)=2",
+        ),
+        (SEARCH_IDS, SEARCH_VECTORS, 0, "depth=0 is not a positive integer"),
+        (SEARCH_IDS, SEARCH_VECTORS, -1, "depth=-1 is not a positive integer"),
+    ],
+    ids=["empty", "length-mismatch", "depth-zero", "depth-negative"],
+)
+def test_search_bad_input_raises(index, query_ids, query_vectors, depth, message):
+    with pytest.raises(ValueError, match=message):
+        search(index, COLLECTION, query_ids, query_vectors, depth)
+
+
+def test_search_ranks_by_inner_product(index):
+    run = search(index, COLLECTION, SEARCH_IDS, SEARCH_VECTORS, 3)
+    assert run == EXPECTED_RUN
+    assert list(run) == SEARCH_IDS
+
+
+def test_search_depth_keeps_best_chunks(index):
+    run = search(index, COLLECTION, SEARCH_IDS, SEARCH_VECTORS, 2)
+    assert run == {qid: ranked[:2] for qid, ranked in EXPECTED_RUN.items()}
+
+
+def test_search_depth_beyond_row_count_returns_all_rows(index):
+    run = search(index, COLLECTION, SEARCH_IDS, SEARCH_VECTORS, 10)
+    assert run == EXPECTED_RUN

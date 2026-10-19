@@ -10,6 +10,7 @@ from config import ARTIFACTS_DIR, PASSAGE_PREFIX, QUERY_PREFIX
 from schema import Chunk
 
 BATCH_SIZE = 1024
+ENCODE_BATCH_SIZE = 32
 
 
 def format_passage(chunk: Chunk, with_title: bool = True) -> str:
@@ -115,7 +116,7 @@ def embed_chunks(
     vectors = model.encode(
         texts,
         normalize_embeddings=True,
-        batch_size=32,
+        batch_size=ENCODE_BATCH_SIZE,
         show_progress_bar=True,
     ).astype(np.float32, copy=False)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,3 +182,87 @@ def build_index(
             ],
         )
     return client
+
+
+def embed_queries(queries: dict[str, str], model) -> tuple[list[str], np.ndarray]:
+    """
+    Embed every query string.
+
+    Args:
+        queries: `{query_id: query_text}` from `queries.jsonl`; dict order sets the row order.
+        model: a loaded SentenceTransformer, or anything with the same
+            `encode(texts, **kwargs) -> np.ndarray` method.
+
+    Returns:
+        `(ids, vectors)`:
+            `ids` is `list(queries)`;
+            `vectors` is a float32 array of shape `(len(ids), embedding_dim)` whose row i is the unit-length embedding of `ids[i]`.
+
+    Raises:
+        ValueError: if `queries` is empty.
+    """
+    if not queries:
+        raise ValueError("queries is empty: nothing to embed")
+
+    ids = list(queries)
+    texts = [format_query(q) for q in queries.values()]
+
+    vectors = model.encode(
+        texts,
+        normalize_embeddings=True,
+        batch_size=ENCODE_BATCH_SIZE,
+        show_progress_bar=True,
+    ).astype(np.float32, copy=False)
+    return ids, vectors
+
+
+def search(
+    client: MilvusClient,
+    collection: str,
+    query_ids: list[str],
+    query_vectors: np.ndarray,
+    depth: int,
+) -> dict[str, list[str]]:
+    """
+    Search the Milvus collection for the top `depth` nearest neighbors of each query vector.
+
+    Args:
+        client: MilvusClient connected to the collection.
+        collection: name of the Milvus collection to search.
+        query_ids: one id per query; `query_ids[i]` belongs to row i of `query_vectors`.
+        query_vectors: float32 array of shape (len(query_ids), embedding_dim) with
+            unit-length rows, normally from `embed_queries`.
+        depth: number of chunks to return per query; use ≥ max(EVAL_KS), since
+            `evaluate` dedupes chunks of the same doc.
+
+    Returns:
+        A run `{query_id: [chunk_id, ...]}` with keys in `query_ids` order. Each list is
+        ranked best first by inner product and has `min(depth, row count)` entries,
+        e.g. `{"1": ["31715818#2", "31715818#0", "4983#0"]}`.
+
+    Raises:
+        ValueError: if `query_ids` is empty, `len(query_ids) != len(query_vectors)`,
+            or `depth < 1`.
+    """
+    if not query_ids:
+        raise ValueError("query_ids is empty: nothing to search")
+    if len(query_ids) != len(query_vectors):
+        raise ValueError(
+            f"len(query_ids)={len(query_ids)} != len(query_vectors)={len(query_vectors)}"
+        )
+    if depth <= 0:
+        raise ValueError(f"depth={depth} is not a positive integer")
+
+    results = client.search(
+        collection,
+        query_vectors.tolist(),
+        anns_field="vector",
+        search_params={"metric_type": "IP"},
+        limit=depth,
+        output_fields=["chunk_id"],
+    )
+
+    return {
+        query_id: [hit["chunk_id"] for hit in hits]
+        for query_id, hits in zip(query_ids, results)
+    }

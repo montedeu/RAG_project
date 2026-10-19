@@ -133,6 +133,9 @@ Sanity baselines (`.venv/bin/python src/evaluate.py`):
 | `format_query(text) -> str` | `QUERY_PREFIX` + text. |
 | `cache_path(model_name, chunker_name, size, overlap, with_title) -> Path` | `ARTIFACTS_DIR / "emb__{model with / → --}__{chunker}__{size}_{overlap}__{title\|notitle}.npz"`. Builds the path only. |
 | `embed_chunks(chunks, model, path, with_title=True) -> (ids, vectors)` | `ids = list(chunks)`; `vectors` float32 `(len(ids), dim)`, unit-length, row i ↔ `ids[i]`. Raises `ValueError` on empty `chunks`. |
+| `embed_queries(queries, model) -> (ids, vectors)` | `ids = list(queries)`; texts built with `format_query`; `vectors` float32 `(len(ids), dim)`, unit-length, row i ↔ `ids[i]`. Not cached (queries are few and short). Raises `ValueError` on empty `queries`. |
+
+Both embed functions call `model.encode(..., normalize_embeddings=True, batch_size=ENCODE_BATCH_SIZE)` (32). Queries and passages must both be unit length for IP to equal cosine.
 
 Embedding cache (`.npz`): keys `ids`, `vectors`, `fingerprint` (sha256 of the passage strings joined with `"\0"`). The cache is reused only if the ids (in order) **and** the fingerprint match. Otherwise the chunks are re-embedded and the file is overwritten. `model` is anything with `encode(texts, **kwargs)`; the tests pass a fake.
 
@@ -145,11 +148,20 @@ Embedding cache (`.npz`): keys `ids`, `vectors`, `fingerprint` (sha256 of the pa
 - Returns an open client; the caller must `close()` it.
 - Raises `ValueError` if `ids` is empty or `len(ids) != len(vectors)`.
 
+`search(client, collection, query_ids, query_vectors, depth) -> run` is the dense retriever:
+- `query_vectors` come from `embed_queries`; row i ↔ `query_ids[i]`. Query embedding is separate from search, so one set of query vectors can be searched against several collections (e.g. both chunkers).
+- One Milvus `search` call for all queries: `anns_field="vector"`, metric `IP`, `limit=depth`, `output_fields=["chunk_id"]` (without it, every hit carries its full vector).
+- Returns a run (§7) with keys in `query_ids` order. Each list is best first and has `min(depth, row count)` chunk ids. FLAT always returns neighbours, so a list is never empty.
+- `depth` counts **chunks**, and `evaluate` dedupes them into docs. Use a depth well above `max(EVAL_KS)` (e.g. 100) so that ≥ 20 distinct docs remain.
+- Raises `ValueError` if `query_ids` is empty, `len(query_ids) != len(query_vectors)`, or `depth < 1`.
+
+Flow: `embed_chunks` → `build_index` → `embed_queries` → `search` → `evaluate`.
+
 ## 9. Planned interfaces
 
 *Planned. Record the real signature here once written.*
 
-- **Retrievers** (`dense.py`, `bm25.py`): take queries and a depth, return a run.
+- **BM25 retriever** (`bm25.py`): queries and a depth in, a run out (same format as `dense.search`).
 - **Hybrid** (`hybrid.py`): runs in, a fused run out (reciprocal rank fusion, `1 / (60 + rank)`).
 - **Rerank** (`rerank.py`): a run plus chunk texts in, a reordered run (top ~20) out.
 - **Generate** (`generate.py`): a query plus top chunks in, an answer citing `chunk_id`s out. There is an explicit "not found in documents" answer when the context doesn't support one.
