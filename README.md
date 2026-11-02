@@ -81,6 +81,7 @@ Requires Python 3.12. Commands assume Linux or WSL.
 python3.12 -m venv .venv
 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
 .venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -e .          # the ragscratch package, editable
 ```
 
 Download SciFact into `data/`:
@@ -103,21 +104,24 @@ Commands run from the repository root:
 
 ```bash
 .venv/bin/python -m pytest -q tests      # test suite
-.venv/bin/python src/evaluate.py         # random/perfect sanity runs for the metrics
-.venv/bin/python src/ingest.py           # corpus stats and chunk counts per chunker
+.venv/bin/python -m ragscratch.evaluate  # random/perfect sanity runs for the metrics
+.venv/bin/python -m ragscratch.ingest    # corpus stats and chunk counts per chunker
 ```
 
 ## Layout
 
 ```
-src/config.py     paths, model name, chunk size/overlap, evaluation cutoffs
-src/schema.py     Document and Chunk dataclasses
-src/ingest.py     BEIR loading, validation, corpus stats, both chunkers
-src/evaluate.py   metrics, chunk→doc mapping, evaluate(run, qrels, ks)
-src/dense.py      passage/query formatting, cached embeddings (Milvus search next)
-src/bm25.py, hybrid.py, rerank.py, generate.py   later milestones
-tests/            pytest suite (pyproject.toml puts src/ on the path)
-spec.md           data formats, interfaces and metric definitions
+src/ragscratch/                the package (installed editable with `pip install -e .`)
+  config.py      paths, model name, chunk size/overlap, evaluation cutoffs
+  schema.py      Document and Chunk dataclasses
+  ingest.py      BEIR loading, validation, corpus stats, both chunkers
+  evaluate.py    metrics, chunk→doc mapping, evaluate(run, qrels, ks)
+  dense.py       passage/query formatting, cached embeddings, Milvus index, search
+  bm25.py, hybrid.py, rerank.py, generate.py   later milestones
+experiments/     scripts that run the stages and record results
+tests/           pytest suite
+spec.md          data formats, interfaces and metric definitions
+GLOSSARY.md      project vocabulary (Run, Depth, Cutoff, Baseline, ...)
 ```
 
 ## License

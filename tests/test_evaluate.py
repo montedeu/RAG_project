@@ -36,7 +36,7 @@ import math
 
 import pytest
 
-from evaluate import (
+from ragscratch.evaluate import (
     evaluate,
     map_chunks_to_docs,
     ndcg_at_k,

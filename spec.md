@@ -50,7 +50,7 @@ Hand-written set details:
 - The questions were checked against competing docs, but not against every doc, so an unjudged relevant doc is possible.
 - `load_queries` drops `metadata`; `load_query_types` reads the type. To score one type, filter qrels to its query ids and call `evaluate`.
 
-## 4. In-memory types (`src/schema.py`)
+## 4. In-memory types (`ragscratch/schema.py`)
 
 ```python
 Document(doc_id: str, title: str, text: str)
@@ -60,7 +60,7 @@ Chunk(chunk_id: str, doc_id: str, position: int, title: str, text: str)
 - `Chunk.text` is the body only. The title is combined at **indexing time**, so title vs no-title stays an experiment switch.
 - Indexed string for e5: `"passage: {title}. {text}"`, built by `dense.format_passage` (see §8). Query string: `f"query: {text}"`.
 
-## 5. Loading (`src/ingest.py`)
+## 5. Loading (`ragscratch/ingest.py`)
 
 | Function | Returns |
 |---|---|
@@ -72,7 +72,7 @@ Chunk(chunk_id: str, doc_id: str, position: int, title: str, text: str)
 | `get_evaluable_queries(queries, qrels)` | only the queries that have qrels |
 | `check_consistency(corpus, queries, qrels)` | `None`; raises `ValueError` if qrels reference an unknown query or doc |
 
-## 6. Chunking (`src/ingest.py`)
+## 6. Chunking (`ragscratch/ingest.py`)
 
 Chunker contract: `(text: str, tokenizer, size: int, overlap: int) -> list[str]`
 
@@ -91,7 +91,7 @@ Defaults (`config`):
 - `CHUNK_SIZE = 400`, `CHUNK_OVERLAP = 50`, `TOKEN_LIMIT = 512`.
 - 400 leaves room for special tokens, `passage: ` and titles (max 80 tokens). The indexed string is at most 485 tokens.
 
-## 7. Runs and evaluation (`src/evaluate.py`)
+## 7. Runs and evaluation (`ragscratch/evaluate.py`)
 
 **Run**: `dict[str, list[str]]`, `{query_id: [chunk_id, ...]}`, each list ranked best first.
 - The list may contain several chunks of the same doc.
@@ -121,11 +121,11 @@ All metrics are per query, use binary relevance, and look only at the top k. `R`
 
 All three raise `ValueError` if `R` is empty or `k < 1`.
 
-Sanity baselines (`.venv/bin/python src/evaluate.py`):
+Sanity baselines (`.venv/bin/python -m ragscratch.evaluate`):
 - A random run ≈ 0 everywhere.
 - A perfect run = 1, except SciFact recall@1 = 0.955 (23 test queries have more than 1 relevant doc).
 
-## 8. Dense retrieval (`src/dense.py`)
+## 8. Dense retrieval (`ragscratch/dense.py`)
 
 | Function | Behaviour |
 |---|---|
@@ -152,7 +152,7 @@ Embedding cache (`.npz`): keys `ids`, `vectors`, `fingerprint` (sha256 of the pa
 - `query_vectors` come from `embed_queries`; row i ↔ `query_ids[i]`. Query embedding is separate from search, so one set of query vectors can be searched against several collections (e.g. both chunkers).
 - One Milvus `search` call for all queries: `anns_field="vector"`, metric `IP`, `limit=depth`, `output_fields=["chunk_id"]` (without it, every hit carries its full vector).
 - Returns a run (§7) with keys in `query_ids` order. Each list is best first and has `min(depth, row count)` chunk ids. FLAT always returns neighbours, so a list is never empty.
-- `depth` counts **chunks**, and `evaluate` dedupes them into docs. Use a depth well above `max(EVAL_KS)` (e.g. 100) so that ≥ 20 distinct docs remain.
+- `depth` counts **chunks**, and `evaluate` dedupes them into docs. A depth of (max chunks per doc) × `max(EVAL_KS)` guarantees ≥ `max(EVAL_KS)` distinct docs: on SciFact that is 7 × 20 = 140.
 - Raises `ValueError` if `query_ids` is empty, `len(query_ids) != len(query_vectors)`, or `depth < 1`.
 
 Flow: `embed_chunks` → `build_index` → `embed_queries` → `search` → `evaluate`.

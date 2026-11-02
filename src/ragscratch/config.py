@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parents[1]
+PROJECT_ROOT = Path(__file__).parents[2]
 SCIFACT_DIR = PROJECT_ROOT / "data" / "scifact"
 # Hand-written queries over the SciFact corpus; ids h1..h20, metadata.type keyword/paraphrase.
 HANDWRITTEN_DIR = PROJECT_ROOT / "data" / "handwritten"

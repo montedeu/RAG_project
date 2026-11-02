@@ -6,8 +6,8 @@ import re
 from pathlib import Path
 from statistics import mean, median
 
-from config import CHUNK_OVERLAP, CHUNK_SIZE, EMBEDDING_MODEL, SCIFACT_DIR, TOKEN_LIMIT
-from schema import Chunk, Document
+from ragscratch.config import CHUNK_OVERLAP, CHUNK_SIZE, EMBEDDING_MODEL, SCIFACT_DIR, TOKEN_LIMIT
+from ragscratch.schema import Chunk, Document
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -386,7 +386,7 @@ def load_beir(
 if __name__ == "__main__":
     from transformers import AutoTokenizer
 
-    from dense import format_passage
+    from ragscratch.dense import format_passage
 
     tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL)
     corpus, queries, qrels = load_beir(SCIFACT_DIR)

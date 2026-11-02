@@ -1,3 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ragscratch"
+version = "0.1.0"
+description = "RAG built from scratch, without orchestration frameworks"
+requires-python = ">=3.12"
+# Dependencies live in requirements.txt (torch CPU build needs a custom index URL).
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.pytest.ini_options]
-pythonpath = ["src"]
 testpaths = ["tests"]

@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 from pymilvus import DataType, MilvusClient
 
-from config import ARTIFACTS_DIR, PASSAGE_PREFIX, QUERY_PREFIX
-from schema import Chunk
+from ragscratch.config import ARTIFACTS_DIR, PASSAGE_PREFIX, QUERY_PREFIX
+from ragscratch.schema import Chunk
 
 BATCH_SIZE = 1024
 ENCODE_BATCH_SIZE = 32

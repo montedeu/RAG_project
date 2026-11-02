@@ -132,8 +132,8 @@ def evaluate(
 if __name__ == "__main__":
     import random
 
-    from config import EVAL_KS, HANDWRITTEN_DIR, SCIFACT_DIR
-    from ingest import load_corpus, load_query_relations
+    from ragscratch.config import EVAL_KS, HANDWRITTEN_DIR, SCIFACT_DIR
+    from ragscratch.ingest import load_corpus, load_query_relations
 
     # Sanity check before any retriever exists: random runs must score ~0 and perfect runs 1,
     # except recall@k for queries with more than k relevant docs.

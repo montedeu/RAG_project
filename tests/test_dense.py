@@ -52,8 +52,8 @@ import hashlib
 import numpy as np
 import pytest
 
-from config import ARTIFACTS_DIR
-from dense import (
+from ragscratch.config import ARTIFACTS_DIR
+from ragscratch.dense import (
     build_index,
     cache_path,
     embed_chunks,
@@ -62,7 +62,7 @@ from dense import (
     format_query,
     search,
 )
-from schema import Chunk
+from ragscratch.schema import Chunk
 
 DIM = 3
 

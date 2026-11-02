@@ -44,7 +44,7 @@ import json
 
 import pytest
 
-from ingest import (
+from ragscratch.ingest import (
     SENTENCE_PATTERN,
     check_consistency,
     chunk,
@@ -59,7 +59,7 @@ from ingest import (
     load_query_relations,
     load_query_types,
 )
-from schema import Document
+from ragscratch.schema import Document
 
 
 def _n_tokens(tokenizer, text):
